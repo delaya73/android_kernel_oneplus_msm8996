@@ -1693,37 +1693,36 @@ eHalStatus sme_SetPlmRequest(tHalHandle hHal, tpSirPlmReq pPlmReq)
         }
 
         if (pPlmReq->enable) {
-
            /* validating channel numbers */
-           for (count = 0; count < pPlmReq->plmNumCh; count++) {
-
-              ret = csrIsSupportedChannel(pMac, pPlmReq->plmChList[count]);
-              if (ret && pPlmReq->plmChList[count] > 14)
-              {
-                  if (NV_CHANNEL_DFS ==
-                       vos_nv_getChannelEnabledState(pPlmReq->plmChList[count]))
+           if(pPlmReq->plmNumCh < WNI_CFG_VALID_CHANNEL_LIST_LEN) {
+               for (count = 0; count < pPlmReq->plmNumCh; count++) {
+                  ret = csrIsSupportedChannel(pMac, pPlmReq->plmChList[count]);
+                  if (ret && pPlmReq->plmChList[count] > 14)
                   {
-                      /* DFS channel is provided, no PLM bursts can be
-                      * transmitted. Ignoring these channels.
-                      */
-                      VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_INFO,
-                                "%s DFS channel %d ignored for PLM", __func__,
-                                pPlmReq->plmChList[count]);
-                      continue;
+                      if (NV_CHANNEL_DFS ==
+                           vos_nv_getChannelEnabledState(pPlmReq->plmChList[count]))
+                      {
+                          /* DFS channel is provided, no PLM bursts can be
+                          * transmitted. Ignoring these channels.
+                          */
+                          VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_INFO,
+                                    "%s DFS channel %d ignored for PLM", __func__,
+                                    pPlmReq->plmChList[count]);
+                          continue;
+                      }
                   }
-              }
-              else if (!ret)
-              {
-                   /* Not supported, ignore the channel */
-                   VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_INFO,
-                             "%s Unsupported channel %d ignored for PLM",
-                             __func__, pPlmReq->plmChList[count]);
-                   continue;
-              }
-              ch_list[valid_count] = pPlmReq->plmChList[count];
-              valid_count++;
-           } /* End of for () */
-
+                  else if (!ret)
+                  {
+                       /* Not supported, ignore the channel */
+                       VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_INFO,
+                                 "%s Unsupported channel %d ignored for PLM",
+                                 __func__, pPlmReq->plmChList[count]);
+                       continue;
+                  }
+                  ch_list[valid_count] = pPlmReq->plmChList[count];
+                  valid_count++;
+               } /* End of for () */
+           }
            /* Copying back the valid channel list to plm struct */
            vos_mem_set((void *)pPlmReq->plmChList, pPlmReq->plmNumCh, 0);
            if (valid_count)
@@ -3280,6 +3279,19 @@ eHalStatus sme_ProcessMsg(tHalHandle hHal, vos_msg_t* pMsg)
                    pMsg->bodyptr = NULL;
                }
                break;
+#ifdef WLAN_FEATURE_MOTION_DETECTION
+          case eWNI_SME_MOTION_DET_HOST_EVENT:
+               if (pMsg->bodyptr) {
+                   if (pMac->sme.mt_host_ev_cb) {
+                       pMac->sme.mt_host_ev_cb(pMac->hHdd,
+                                               (tSirMtEvent *)pMsg->bodyptr);
+                   }
+
+                   vos_mem_free(pMsg->bodyptr);
+                   pMsg->bodyptr = NULL;
+               }
+               break;
+#endif
 #ifdef WLAN_FEATURE_NAN
           case eWNI_SME_NAN_EVENT:
               MTRACE(vos_trace(VOS_MODULE_ID_SME, TRACE_CODE_SME_RX_WDA_MSG,
@@ -8174,11 +8186,11 @@ eHalStatus sme_updateP2pIe(tHalHandle hHal, void *p2pIe, tANI_U32 p2pIeLength)
         {
             pMac->p2pContext.probeRspIeLength = p2pIeLength;
 
+            vos_mem_copy((tANI_U8 *)pMac->p2pContext.probeRspIe, p2pIe,
+                         p2pIeLength);
             sirDumpBuf( pMac, SIR_LIM_MODULE_ID, LOG2,
                         pMac->p2pContext.probeRspIe,
                         pMac->p2pContext.probeRspIeLength );
-            vos_mem_copy((tANI_U8 *)pMac->p2pContext.probeRspIe, p2pIe,
-                         p2pIeLength);
         }
 
         //release the lock for the sme object
@@ -13042,7 +13054,7 @@ eIniChanBondState sme_SelectCBMode(tHalHandle hHal, eCsrPhyMode eCsrPhyMode,
                             uint16_t *vht_channel_width,
                             uint16_t ch_width_orig)
 {
-   tSmeConfigParams  smeConfig;
+   tSmeConfigParams  *smeConfig;
    tANI_U32 ht40plus2gendch = 0;
    tpAniSirGlobal    pMac = PMAC_STRUCT(hHal);
    eIniChanBondState cb_mode = eCSR_INI_SINGLE_CHANNEL_CENTERED;
@@ -13053,53 +13065,60 @@ eIniChanBondState sme_SelectCBMode(tHalHandle hHal, eCsrPhyMode eCsrPhyMode,
                 "%s: HW: %d CH: %d ORIG_BW: %d\n", __func__, eCsrPhyMode,
                 channel, ch_width_orig);
 
+	smeConfig = vos_mem_malloc(sizeof(tSmeConfigParams));
+	if (!smeConfig) {
+		VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
+		       FL("Can't alloc mem for sme config"));
+		return -EINVAL;
+	}
+
    *vht_channel_width = ch_width_orig;
-   vos_mem_zero(&smeConfig, sizeof (tSmeConfigParams));
-   sme_GetConfigParam(pMac, &smeConfig);
+   vos_mem_zero(smeConfig, sizeof (tSmeConfigParams));
+   sme_GetConfigParam(pMac, smeConfig);
 
    if ((eCSR_DOT11_MODE_11ac == eCsrPhyMode ||
         eCSR_DOT11_MODE_11ac_ONLY == eCsrPhyMode) &&
         (eHT_CHANNEL_WIDTH_80MHZ == ch_width_orig)) {
       if (channel== 36 || channel == 52 || channel == 100 ||
                 channel == 116 || channel == 149 || channel == 132) {
-          smeConfig.csrConfig.channelBondingMode5GHz =
+          smeConfig->csrConfig.channelBondingMode5GHz =
                 eCSR_INI_QUADRUPLE_CHANNEL_20MHZ_LOW_40MHZ_LOW;
       } else if (channel == 40 || channel == 56 || channel == 104 ||
                      channel == 120 || channel == 153 || channel == 136) {
-          smeConfig.csrConfig.channelBondingMode5GHz =
+          smeConfig->csrConfig.channelBondingMode5GHz =
                 eCSR_INI_QUADRUPLE_CHANNEL_20MHZ_HIGH_40MHZ_LOW;
       } else if (channel == 44 || channel == 60 || channel == 108 ||
                      channel == 124 || channel == 157 || channel == 140) {
-          smeConfig.csrConfig.channelBondingMode5GHz =
+          smeConfig->csrConfig.channelBondingMode5GHz =
                 eCSR_INI_QUADRUPLE_CHANNEL_20MHZ_LOW_40MHZ_HIGH;
       } else if (channel == 48 || channel == 64 || channel == 112 ||
                      channel == 128 || channel == 144 || channel == 161) {
-          smeConfig.csrConfig.channelBondingMode5GHz =
+          smeConfig->csrConfig.channelBondingMode5GHz =
                 eCSR_INI_QUADRUPLE_CHANNEL_20MHZ_HIGH_40MHZ_HIGH;
       } else if (channel == 165) {
-          smeConfig.csrConfig.channelBondingMode5GHz =
+          smeConfig->csrConfig.channelBondingMode5GHz =
                                      eCSR_INI_SINGLE_CHANNEL_CENTERED;
           *vht_channel_width = eHT_CHANNEL_WIDTH_20MHZ;
       } else if (channel >= 1 && channel < 5) {
-          smeConfig.csrConfig.channelBondingMode24GHz =
+          smeConfig->csrConfig.channelBondingMode24GHz =
                 eCSR_INI_DOUBLE_CHANNEL_LOW_PRIMARY;
           *vht_channel_width = eHT_CHANNEL_WIDTH_40MHZ;
       } else if (channel >= 5 && channel <= 9) {
           if (0 != ht_sec_ch) {
               if (ht_sec_ch > channel)
-                  smeConfig.csrConfig.channelBondingMode24GHz =
+                  smeConfig->csrConfig.channelBondingMode24GHz =
                         eCSR_INI_DOUBLE_CHANNEL_LOW_PRIMARY;
               else
-                  smeConfig.csrConfig.channelBondingMode24GHz =
+                  smeConfig->csrConfig.channelBondingMode24GHz =
                         eCSR_INI_DOUBLE_CHANNEL_HIGH_PRIMARY;
 	  }
           *vht_channel_width = eHT_CHANNEL_WIDTH_40MHZ;
       } else if (channel > 9 && channel <= 13) {
-          smeConfig.csrConfig.channelBondingMode24GHz =
+          smeConfig->csrConfig.channelBondingMode24GHz =
                 eCSR_INI_DOUBLE_CHANNEL_HIGH_PRIMARY;
           *vht_channel_width = eHT_CHANNEL_WIDTH_40MHZ;
       } else if (channel ==14) {
-          smeConfig.csrConfig.channelBondingMode24GHz =
+          smeConfig->csrConfig.channelBondingMode24GHz =
                 eCSR_INI_SINGLE_CHANNEL_CENTERED;
           *vht_channel_width = eHT_CHANNEL_WIDTH_20MHZ;
       }
@@ -13116,55 +13135,56 @@ eIniChanBondState sme_SelectCBMode(tHalHandle hHal, eCsrPhyMode eCsrPhyMode,
                 channel == 64 || channel == 104 || channel == 112 ||
                 channel == 120 || channel == 128 || channel == 136 ||
                 channel == 153 || channel == 161 || channel == 144) {
-           smeConfig.csrConfig.channelBondingMode5GHz =
+           smeConfig->csrConfig.channelBondingMode5GHz =
                                     eCSR_INI_DOUBLE_CHANNEL_HIGH_PRIMARY;
        } else if (channel== 36 || channel == 44 || channel == 52 ||
                 channel == 60 || channel == 100 || channel == 108 ||
                 channel == 116 || channel == 124 || channel == 132 ||
                 channel == 149 || channel == 157 || channel == 140) {
-           smeConfig.csrConfig.channelBondingMode5GHz =
+           smeConfig->csrConfig.channelBondingMode5GHz =
                                         eCSR_INI_DOUBLE_CHANNEL_LOW_PRIMARY;
        } else if (channel == 165) {
-           smeConfig.csrConfig.channelBondingMode5GHz =
+           smeConfig->csrConfig.channelBondingMode5GHz =
                                             eCSR_INI_SINGLE_CHANNEL_CENTERED;
            *vht_channel_width = eHT_CHANNEL_WIDTH_20MHZ;
        } else if (channel >= 1 && channel < 5) {
-           smeConfig.csrConfig.channelBondingMode24GHz =
+           smeConfig->csrConfig.channelBondingMode24GHz =
                                            eCSR_INI_DOUBLE_CHANNEL_LOW_PRIMARY;
        } else if (channel >= 5 && channel <= ht40plus2gendch) {
           if (ht_sec_ch > channel)
-              smeConfig.csrConfig.channelBondingMode24GHz =
+              smeConfig->csrConfig.channelBondingMode24GHz =
                     eCSR_INI_DOUBLE_CHANNEL_LOW_PRIMARY;
           else
-              smeConfig.csrConfig.channelBondingMode24GHz =
+              smeConfig->csrConfig.channelBondingMode24GHz =
                     eCSR_INI_DOUBLE_CHANNEL_HIGH_PRIMARY;
        } else if (channel > ht40plus2gendch && channel <= 13) {
-           smeConfig.csrConfig.channelBondingMode24GHz =
+           smeConfig->csrConfig.channelBondingMode24GHz =
                                            eCSR_INI_DOUBLE_CHANNEL_HIGH_PRIMARY;
        } else if (channel ==14) {
-           smeConfig.csrConfig.channelBondingMode24GHz =
+           smeConfig->csrConfig.channelBondingMode24GHz =
               eCSR_INI_SINGLE_CHANNEL_CENTERED;
            *vht_channel_width = eHT_CHANNEL_WIDTH_20MHZ;
        }
    } else {
        *vht_channel_width = eHT_CHANNEL_WIDTH_20MHZ;
        if (channel <= 14) {
-           smeConfig.csrConfig.channelBondingMode24GHz =
+           smeConfig->csrConfig.channelBondingMode24GHz =
                             eCSR_INI_SINGLE_CHANNEL_CENTERED;
        } else {
-           smeConfig.csrConfig.channelBondingMode5GHz =
+           smeConfig->csrConfig.channelBondingMode5GHz =
                             eCSR_INI_SINGLE_CHANNEL_CENTERED;
        }
    }
 
-   sme_AdjustCBMode(pMac, &smeConfig, channel, vht_channel_width);
-   sme_UpdateConfig (pMac, &smeConfig);
-   cb_mode = (channel <= 14) ? smeConfig.csrConfig.channelBondingMode24GHz :
-                        smeConfig.csrConfig.channelBondingMode5GHz;
+   sme_AdjustCBMode(pMac, smeConfig, channel, vht_channel_width);
+   sme_UpdateConfig (pMac, smeConfig);
+   cb_mode = (channel <= 14) ? smeConfig->csrConfig.channelBondingMode24GHz :
+                        smeConfig->csrConfig.channelBondingMode5GHz;
    VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_WARN,
          "%s: CH: %d NEW_BW: %d %s-CB_Mode:%d", __func__, channel,
          *vht_channel_width, (channel <=14) ? "2G" : "5G", cb_mode);
 
+   vos_mem_free(smeConfig);
    return cb_mode;
 }
 
@@ -15887,26 +15907,6 @@ eHalStatus sme_UpdateAddIE(tHalHandle hHal,
 }
 
 /* ---------------------------------------------------------------------------
-    \fn sme_staInMiddleOfRoaming
-    \brief  This function returns TRUE if STA is in the middle of roaming state
-    \param  hHal - HAL handle for device
-    \param  sessionId - Session Identifier
-    \- return TRUE or FALSE
-    -------------------------------------------------------------------------*/
-tANI_BOOLEAN sme_staInMiddleOfRoaming(tHalHandle hHal, tANI_U8 sessionId)
-{
-    tpAniSirGlobal pMac   = PMAC_STRUCT( hHal );
-    eHalStatus     status = eHAL_STATUS_SUCCESS;
-    tANI_BOOLEAN   ret    = FALSE;
-
-    if (eHAL_STATUS_SUCCESS == (status = sme_AcquireGlobalLock(&pMac->sme))) {
-        ret = csrNeighborMiddleOfRoaming(hHal, sessionId);
-        sme_ReleaseGlobalLock(&pMac->sme);
-    }
-    return ret;
-}
-
-/* ---------------------------------------------------------------------------
     \fn sme_PsOffloadIsStaInPowerSave
     \brief  This function returns TRUE if STA is in power save
     \param  hHal - HAL handle for device
@@ -18029,7 +18029,7 @@ eHalStatus sme_configure_modulated_dtim(tHalHandle h_hal, tANI_U8 session_id,
 	if (NULL == iwcmd) {
 		VOS_TRACE(VOS_MODULE_ID_SME,
 			  VOS_TRACE_LEVEL_FATAL,
-			  "%s: vos_mem_alloc failed", __func__);
+			  "%s: vos_mem_malloc failed", __func__);
 		return eHAL_STATUS_FAILED_ALLOC;
 	}
 
@@ -18106,6 +18106,115 @@ VOS_STATUS sme_mnt_filter_type_cmd(struct sme_mnt_filter_type_req *input)
     }
 
     return VOS_STATUS_SUCCESS;
+}
+
+#define THROTTLE_PERIOD_MIN        (10)
+#define THROTTLE_PERIOD_MAX        (10000)
+#define THROTTLE_TX_THRESHOLD_MIN  (1)
+#define THROTTLE_TX_THRESHOLD_MAX  (400)
+#define MAX_DUTY_CYCLE_VAL         (100)
+
+eHalStatus sme_hpcs_pulse_params_conf_cmd(tHalHandle hHal,
+                                          tSirHpcsPulseParmasConfig *pHpcsPulseParams)
+{
+    vos_msg_t msg;
+    struct hal_hpcs_pulse_params *hpcs_pulse_params;
+
+    hpcs_pulse_params = vos_mem_malloc(sizeof(*hpcs_pulse_params));
+    if (!hpcs_pulse_params) {
+        VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
+                  FL("Unable to allocate memory"));
+        return eHAL_STATUS_FAILED_ALLOC;
+    }
+
+    vos_mem_zero(hpcs_pulse_params, sizeof(*hpcs_pulse_params));
+
+    hpcs_pulse_params->vdev_id            = pHpcsPulseParams->vdev_id;
+    hpcs_pulse_params->start              = pHpcsPulseParams->start;
+    hpcs_pulse_params->sync_time          = pHpcsPulseParams->sync_time;
+    hpcs_pulse_params->pulse_interval     = pHpcsPulseParams->pulse_interval;
+    hpcs_pulse_params->active_sync_period = pHpcsPulseParams->active_sync_period;
+    hpcs_pulse_params->gpio_pin           = pHpcsPulseParams->gpio_pin;
+    hpcs_pulse_params->pulse_width        = pHpcsPulseParams->pulse_width;
+
+    msg.type = WDA_SET_HPCS_PULSE_PARAMS;
+    msg.reserved = 0;
+    msg.bodyptr = hpcs_pulse_params;
+
+    if (VOS_STATUS_SUCCESS != vos_mq_post_message(VOS_MODULE_ID_WDA, &msg)) {
+        VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
+                  FL("Unable to post WMI_HPCS_PULSE_START_CMDID message"));
+        vos_mem_free(hpcs_pulse_params);
+        return eHAL_STATUS_FAILURE;
+    }
+    return eHAL_STATUS_SUCCESS;
+}
+
+eHalStatus sme_thermal_throttle_mgmt_cmd(tHalHandle hHal, tANI_U16 lower_thresh_deg,
+                                         tANI_U16 higher_thresh_deg)
+{
+    vos_msg_t msg;
+    struct hal_thermal_mgmt_cmd_params *therm_mgmt_cmd;
+
+    therm_mgmt_cmd = vos_mem_malloc(sizeof(*therm_mgmt_cmd));
+    if (!therm_mgmt_cmd) {
+        VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
+                  FL("Unable to allocate memory"));
+        return eHAL_STATUS_FAILED_ALLOC;
+    }
+
+    vos_mem_zero(therm_mgmt_cmd, sizeof(*therm_mgmt_cmd));
+
+    therm_mgmt_cmd->min_temp = lower_thresh_deg;
+    therm_mgmt_cmd->max_temp = higher_thresh_deg;
+    therm_mgmt_cmd->enable = 1;
+
+    msg.type = WDA_THERMAL_MGMT_CMD;
+    msg.reserved = 0;
+    msg.bodyptr = therm_mgmt_cmd;
+
+    if (VOS_STATUS_SUCCESS != vos_mq_post_message(VOS_MODULE_ID_WDA, &msg)) {
+        VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
+                  FL("Unable to post WDA_THERMAL_MGMT_CMD message"));
+        vos_mem_free(therm_mgmt_cmd);
+        return eHAL_STATUS_FAILURE;
+    }
+    return eHAL_STATUS_SUCCESS;
+}
+
+eHalStatus sme_thermal_throttle_set_conf_cmd(tHalHandle hHal, bool enable,
+                                             tANI_U32 dc, tANI_U32 dc_off_percent,
+                                             tANI_U32 prio)
+{
+    vos_msg_t msg;
+    struct hal_thermal_mitigation_params *therm_data;
+
+    therm_data = vos_mem_malloc(sizeof(*therm_data));
+    if (!therm_data) {
+        VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
+                  FL("Unable to allocate memory"));
+        return eHAL_STATUS_FAILED_ALLOC;
+    }
+
+    vos_mem_zero(therm_data, sizeof(*therm_data));
+
+
+    therm_data->enable = enable;
+    therm_data->dc = dc;
+    therm_data->level_conf[0].dcoffpercent = dc_off_percent;
+    therm_data->level_conf[0].priority = prio;
+
+    msg.type = WDA_THERM_THROT_SET_CONF_CMD;
+    msg.reserved = 0;
+    msg.bodyptr = therm_data;
+
+    if (VOS_STATUS_SUCCESS != vos_mq_post_message(VOS_MODULE_ID_WDA, &msg)) {
+        VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
+                  FL("Unable to post WMI_THERM_THROT_SET_CONF_CMDID message"));
+        vos_mem_free(therm_data);
+        return eHAL_STATUS_FAILURE;
+    }
+    return eHAL_STATUS_SUCCESS;
 }
 
 /**
@@ -20710,4 +20819,216 @@ bool sme_is_sta_key_exchange_in_progress(tHalHandle hal, uint8_t session_id)
 	}
 
 	return CSR_IS_WAIT_FOR_KEY(mac_ctx, session_id);
+}
+
+#ifdef WLAN_FEATURE_MOTION_DETECTION
+/**
+ * sme_set_mt_host_ev_cb() - set callback which to handle
+ *                            eWNI_SME_MOTION_DET_HOST_EVENT
+ *
+ * @hHal: Handler return by macOpen.
+ * @pcallbackfn: callback to handle the motion det host event
+ * @pcallbackcontext: callback context
+ *
+ * Return: eHalStatus.
+ */
+eHalStatus sme_set_mt_host_ev_cb
+(
+    tHalHandle hHal,
+    VOS_STATUS (*pcallbackfn)(void *pcallbackcontext, tSirMtEvent *pEvent),
+    void *pcallbackcontext
+)
+{
+    tpAniSirGlobal pMac = PMAC_STRUCT(hHal);
+    eHalStatus status;
+
+    status = sme_AcquireGlobalLock(&pMac->sme);
+    if (eHAL_STATUS_SUCCESS == status) {
+        pMac->sme.mt_host_ev_cb = pcallbackfn;
+        pMac->sme.mt_cxt = pcallbackcontext;
+        sme_ReleaseGlobalLock(&pMac->sme);
+    }
+    return status;
+}
+
+eHalStatus sme_MotionDetConfig(tHalHandle hHal, tSirMotionDetConfig *pMotionDetConfig)
+{
+    vos_msg_t vosMessage;
+    tSirMotionDetConfig *pSmeMotionDetConfig;
+    eHalStatus status = eHAL_STATUS_SUCCESS;
+    tpAniSirGlobal pMac = PMAC_STRUCT(hHal);
+
+    pSmeMotionDetConfig = vos_mem_malloc(sizeof(*pMotionDetConfig));
+
+    if (!pSmeMotionDetConfig) {
+        VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
+         "%s: Not able to allocate memory for WDA_SET_MOTION_DET_CONFIG",
+         __func__);
+        return eHAL_STATUS_E_MALLOC_FAILED;
+    }
+
+    *pSmeMotionDetConfig = *pMotionDetConfig;
+
+    status = sme_AcquireGlobalLock(&pMac->sme);
+    if (eHAL_STATUS_SUCCESS == status) {
+        /* serialize the req through MC thread */
+        vosMessage.type     = WDA_SET_MOTION_DET_CONFIG;
+        vosMessage.bodyptr  = pSmeMotionDetConfig;
+
+        if (!VOS_IS_STATUS_SUCCESS(
+            vos_mq_post_message(VOS_MODULE_ID_WDA, &vosMessage))) {
+            VOS_TRACE( VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
+                "%s: Not able to post WDA_SET_MOTION_DET_CONFIG to WDA!",
+                __func__);
+            vos_mem_free(pSmeMotionDetConfig);
+            status = eHAL_STATUS_FAILURE;
+        }
+        sme_ReleaseGlobalLock(&pMac->sme);
+    } else {
+        VOS_TRACE( VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
+                       "%s: sme_AcquireGlobalLock error!",
+                       __func__);
+        vos_mem_free(pSmeMotionDetConfig);
+    }
+
+    return (status);
+}
+
+eHalStatus sme_MotionDetEnable(tHalHandle hHal, tSirMotionDetEnable *pMotionDetEnable)
+{
+    vos_msg_t vosMessage;
+    tSirMotionDetEnable *pSmeMotionDetEnable;
+    eHalStatus status = eHAL_STATUS_SUCCESS;
+    tpAniSirGlobal pMac = PMAC_STRUCT(hHal);
+
+    pSmeMotionDetEnable = vos_mem_malloc(sizeof(*pMotionDetEnable));
+
+    if (!pSmeMotionDetEnable) {
+        VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
+         "%s: Not able to allocate memory for WDA_SET_MOTION_DET_ENABLE",
+         __func__);
+        return eHAL_STATUS_E_MALLOC_FAILED;
+    }
+
+    *pSmeMotionDetEnable = *pMotionDetEnable;
+
+    status = sme_AcquireGlobalLock(&pMac->sme);
+    if (eHAL_STATUS_SUCCESS == status) {
+        /* serialize the req through MC thread */
+        vosMessage.type     = WDA_SET_MOTION_DET_ENABLE;
+        vosMessage.bodyptr  = pSmeMotionDetEnable;
+
+        if (!VOS_IS_STATUS_SUCCESS(
+            vos_mq_post_message(VOS_MODULE_ID_WDA, &vosMessage))) {
+            VOS_TRACE( VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
+                "%s: Not able to post WDA_SET_MOTION_DET_ENABLE to WDA!",
+                __func__);
+            vos_mem_free(pSmeMotionDetEnable);
+            status = eHAL_STATUS_FAILURE;
+        }
+        sme_ReleaseGlobalLock(&pMac->sme);
+    } else {
+        VOS_TRACE( VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
+                       "%s: sme_AcquireGlobalLock error!",
+                       __func__);
+        vos_mem_free(pSmeMotionDetEnable);
+    }
+
+    return (status);
+}
+
+eHalStatus sme_MotionDetBaseLineConfig(tHalHandle hHal, tSirMotionDetBaseLineConfig *pMotionDetBaseLineConfig)
+{
+    vos_msg_t vosMessage;
+    tSirMotionDetBaseLineConfig *pSmeMotionDetBaseLineConfig;
+    eHalStatus status = eHAL_STATUS_SUCCESS;
+    tpAniSirGlobal pMac = PMAC_STRUCT(hHal);
+
+    pSmeMotionDetBaseLineConfig = vos_mem_malloc(sizeof(*pMotionDetBaseLineConfig));
+
+    if (!pSmeMotionDetBaseLineConfig ) {
+        VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
+         "%s: Not able to allocate memory for WDA_SET_MOTION_DET_BASE_LINE_CONFIG",
+         __func__);
+        return eHAL_STATUS_E_MALLOC_FAILED;
+    }
+
+    *pSmeMotionDetBaseLineConfig = *pMotionDetBaseLineConfig;
+
+    status = sme_AcquireGlobalLock(&pMac->sme);
+    if (eHAL_STATUS_SUCCESS == status) {
+        /* serialize the req through MC thread */
+        vosMessage.type     = WDA_SET_MOTION_DET_BASE_LINE_CONFIG;
+        vosMessage.bodyptr  = pSmeMotionDetBaseLineConfig;
+
+        if (!VOS_IS_STATUS_SUCCESS(
+            vos_mq_post_message(VOS_MODULE_ID_WDA, &vosMessage))) {
+            VOS_TRACE( VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
+                "%s: Not able to post WDA_SET_MOTION_DET_BASE_LINE_CONFIG to WDA!",
+                __func__);
+            vos_mem_free(pSmeMotionDetBaseLineConfig);
+            status = eHAL_STATUS_FAILURE;
+        }
+        sme_ReleaseGlobalLock(&pMac->sme);
+    } else {
+        VOS_TRACE( VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
+                       "%s: sme_AcquireGlobalLock error!",
+                       __func__);
+        vos_mem_free(pSmeMotionDetBaseLineConfig);
+    }
+
+    return (status);
+}
+
+eHalStatus sme_MotionDetBaseLineEnable(tHalHandle hHal, tSirMotionDetBaseLineEnable *pMotionDetBaseLineEnable)
+{
+    vos_msg_t vosMessage;
+    tSirMotionDetBaseLineEnable *pSmeMotionDetBaseLineEnable;
+    eHalStatus status = eHAL_STATUS_SUCCESS;
+    tpAniSirGlobal pMac = PMAC_STRUCT(hHal);
+
+    pSmeMotionDetBaseLineEnable = vos_mem_malloc(sizeof(*pMotionDetBaseLineEnable));
+
+    if (!pSmeMotionDetBaseLineEnable ) {
+        VOS_TRACE(VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
+         "%s: Not able to allocate memory for WDA_SET_MOTION_DET_BASE_LINE_ENABLE",
+         __func__);
+        return eHAL_STATUS_E_MALLOC_FAILED;
+    }
+
+    *pSmeMotionDetBaseLineEnable = *pMotionDetBaseLineEnable;
+
+    status = sme_AcquireGlobalLock(&pMac->sme);
+    if (eHAL_STATUS_SUCCESS == status) {
+        /* serialize the req through MC thread */
+        vosMessage.type     = WDA_SET_MOTION_DET_BASE_LINE_ENABLE;
+        vosMessage.bodyptr  = pSmeMotionDetBaseLineEnable;
+
+        if (!VOS_IS_STATUS_SUCCESS(
+            vos_mq_post_message(VOS_MODULE_ID_WDA, &vosMessage))) {
+            VOS_TRACE( VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
+                "%s: Not able to post WDA_SET_MOTION_DET_BASE_LINE_ENABLE to WDA!",
+                __func__);
+            vos_mem_free(pSmeMotionDetBaseLineEnable);
+            status = eHAL_STATUS_FAILURE;
+        }
+        sme_ReleaseGlobalLock(&pMac->sme);
+    } else {
+        VOS_TRACE( VOS_MODULE_ID_SME, VOS_TRACE_LEVEL_ERROR,
+                       "%s: sme_AcquireGlobalLock error!",
+                       __func__);
+        vos_mem_free(pSmeMotionDetBaseLineEnable);
+    }
+
+    return (status);
+}
+#endif
+
+uint32_t sme_unpack_rsn_ie(tHalHandle hal, uint8_t *buf,
+                           uint8_t buf_len,
+                           tDot11fIERSN *rsn_ie)
+{
+         tpAniSirGlobal mac_ctx = PMAC_STRUCT(hal);
+
+         return dot11fUnpackIeRSN(mac_ctx, buf, buf_len, rsn_ie);
 }
