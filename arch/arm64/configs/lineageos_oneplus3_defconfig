@@ -758,7 +758,7 @@ CONFIG_BT_HCIUART_IBS=y
 CONFIG_USER_NS=y
 CONFIG_IPC_NS=y
 
-# SFOS old kernel and other arch options v11
+# SFOS old kernel and other arch options v12
 # ...
 
 # Additional configs for systemd-nspawn and so on
